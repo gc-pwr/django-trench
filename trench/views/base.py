@@ -65,7 +65,7 @@ class MFAFirstStepMixin(MFAStepMixin, ABC):
         try:
             user = authenticate_user_command(
                 request=request,
-                username=serializer.validated_data[User.USERNAME_FIELD],
+                username=serializer.validated_data[User.USERNAME_FIELD].lower(),
                 password=serializer.validated_data["password"],
             )
         except MFAValidationError as cause:
@@ -111,8 +111,7 @@ class MFAMethodActivationView(APIView):
         try:
             if source_field is not None and not hasattr(user, source_field):
                 raise MFASourceFieldDoesNotExistError(
-                    source_field,
-                    user.__class__.__name__
+                    source_field, user.__class__.__name__
                 )
 
             mfa = create_mfa_method_command(
