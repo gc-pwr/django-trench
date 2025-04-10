@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
 from authentication.serializers import UserSerializer
 from authentication.utils import get_client_ip_agent
+from core.util import get_employee_id_for_user
 from trench.settings import trench_settings
 from trench.views import MFAFirstStepMixin, MFASecondStepMixin, MFAStepMixin, User
 import logging
@@ -20,8 +21,9 @@ class MFAJWTView(MFAStepMixin):
         ip, agent = get_client_ip_agent(self.request)
 
         logger.info(f"Logon success; UserID: {user.id}; IP: {ip}; UserAgent: {agent};")
+        employee_id = get_employee_id_for_user(user)
 
-        user_serialized = UserSerializer(user).data
+        user_serialized = UserSerializer(user, context={"employee_id": employee_id}).data
         data = {
             "refresh": str(token),
             "access": str(token.access_token),
