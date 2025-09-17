@@ -181,7 +181,10 @@ class MFAJWTRefreshView(APIView):
 
         except TokenError:
             return Response(
-                {"error": "Invalid or expired refresh token"},
+                {
+                    "error": "Invalid or expired refresh token",
+                    "code": "token_not_valid"
+                },
                 status=HTTP_401_UNAUTHORIZED
             )
 
