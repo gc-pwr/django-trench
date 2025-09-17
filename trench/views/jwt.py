@@ -6,7 +6,7 @@ from rest_framework.status import HTTP_200_OK, HTTP_401_UNAUTHORIZED, HTTP_204_N
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
-from trench.settings import trench_settings, JWT_REFRESH_COOKIE_NAME, JWT_REFRESH_COOKIE_SECURE, JWT_REFRESH_COOKIE_HTTPONLY, JWT_REFRESH_COOKIE_SAMESITE, JWT_REFRESH_COOKIE_PATH, JWT_ROTATE_REFRESH_TOKENS
+from trench.settings import trench_settings, JWT_REFRESH_COOKIE_NAME, JWT_REFRESH_COOKIE_SECURE, JWT_REFRESH_COOKIE_HTTPONLY, JWT_REFRESH_COOKIE_SAMESITE, JWT_REFRESH_COOKIE_PATH, JWT_REFRESH_COOKIE_DOMAIN, JWT_ROTATE_REFRESH_TOKENS
 from trench.views import MFAFirstStepMixin, MFASecondStepMixin, MFAStepMixin, User
 import logging
 
@@ -72,19 +72,29 @@ class MFAJWTView(MFAStepMixin):
         cookie_httponly = trench_settings[JWT_REFRESH_COOKIE_HTTPONLY]
         cookie_samesite = trench_settings[JWT_REFRESH_COOKIE_SAMESITE]
         cookie_path = trench_settings[JWT_REFRESH_COOKIE_PATH]
+        cookie_domain = trench_settings[JWT_REFRESH_COOKIE_DOMAIN]
 
         # Get refresh token lifetime from SimpleJWT settings
         refresh_token_obj = RefreshToken(refresh_token)
         max_age = int(refresh_token_obj.lifetime.total_seconds())
 
+        # Build cookie arguments
+        cookie_kwargs = {
+            'max_age': max_age,
+            'path': cookie_path,
+            'secure': cookie_secure,
+            'httponly': cookie_httponly,
+            'samesite': cookie_samesite,
+        }
+
+        # Only set domain if specified
+        if cookie_domain:
+            cookie_kwargs['domain'] = cookie_domain
+
         response.set_cookie(
             cookie_name,
             refresh_token,
-            max_age=max_age,
-            path=cookie_path,
-            secure=cookie_secure,
-            httponly=cookie_httponly,
-            samesite=cookie_samesite,
+            **cookie_kwargs
         )
 
     def finalize_response(self, request, response, *args, **kwargs):
@@ -182,16 +192,21 @@ class MFAJWTLogoutView(APIView):
     def post(self, request):
         cookie_name = trench_settings[JWT_REFRESH_COOKIE_NAME]
         cookie_path = trench_settings[JWT_REFRESH_COOKIE_PATH]
+        cookie_domain = trench_settings[JWT_REFRESH_COOKIE_DOMAIN]
 
         response = Response(
             {"message": "Successfully logged out"},
             status=HTTP_204_NO_CONTENT
         )
 
-        # Clear refresh token cookie
+        # Clear refresh token cookie - need to match domain if set
+        delete_kwargs = {'path': cookie_path}
+        if cookie_domain:
+            delete_kwargs['domain'] = cookie_domain
+
         response.delete_cookie(
             cookie_name,
-            path=cookie_path,
+            **delete_kwargs
         )
 
         # Log the logout
