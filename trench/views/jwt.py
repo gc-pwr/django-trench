@@ -9,6 +9,7 @@ from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 from trench.settings import trench_settings, JWT_REFRESH_COOKIE_NAME, JWT_REFRESH_COOKIE_SECURE, JWT_REFRESH_COOKIE_HTTPONLY, JWT_REFRESH_COOKIE_SAMESITE, JWT_REFRESH_COOKIE_PATH, JWT_REFRESH_COOKIE_DOMAIN, JWT_ROTATE_REFRESH_TOKENS
 from trench.views import MFAFirstStepMixin, MFASecondStepMixin, MFAStepMixin, User
 import logging
+from rest_framework_simplejwt.settings import api_settings
 
 logger = logging.getLogger("audit_logger")
 
@@ -149,30 +150,36 @@ class MFAJWTRefreshView(APIView):
         try:
             refresh = RefreshToken(refresh_token)
 
-            # Check if we should rotate refresh tokens
             if trench_settings[JWT_ROTATE_REFRESH_TOKENS]:
-                # Get access token (which works) and use its user
-                access_token = refresh.access_token
-                new_refresh = RefreshToken.for_user(access_token.user)
+                # Optional: blacklist old refresh token if configured
+                if getattr(api_settings, "BLACKLIST_AFTER_ROTATION", False):
+                    try:
+                        refresh.blacklist()
+                    except AttributeError:
+                        # Blacklist app not installed
+                        pass
 
-                data = {
-                    "access": str(new_refresh.access_token),
-                }
+                # Rotate the refresh token in-place (aligns with SimpleJWT behavior)
+                refresh.set_jti()
+                refresh.set_exp()
+                refresh.set_iat()
 
-                response = Response(data, status=HTTP_200_OK)
-
-                # Set new refresh token cookie using helper method
-                MFAJWTView._set_refresh_token_cookie_static(response, str(new_refresh))
-
-                return response
-            else:
-                # Just generate new access token with existing refresh token
                 data = {
                     "access": str(refresh.access_token),
                 }
-                return Response(data, status=HTTP_200_OK)
+                response = Response(data, status=HTTP_200_OK)
 
-        except TokenError as e:
+                # Set the rotated refresh token in the HTTPOnly cookie
+                MFAJWTView._set_refresh_token_cookie_static(response, str(refresh))
+                return response
+
+            # No rotation: issue new access token only
+            data = {
+                "access": str(refresh.access_token),
+            }
+            return Response(data, status=HTTP_200_OK)
+
+        except TokenError:
             return Response(
                 {"error": "Invalid or expired refresh token"},
                 status=HTTP_401_UNAUTHORIZED
