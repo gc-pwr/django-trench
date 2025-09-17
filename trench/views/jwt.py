@@ -151,13 +151,9 @@ class MFAJWTRefreshView(APIView):
 
             # Check if we should rotate refresh tokens
             if trench_settings[JWT_ROTATE_REFRESH_TOKENS]:
-                # Generate new refresh token
-                refresh.set_jti()
-                refresh.set_exp()
-
-                # Get user for new token
-                user = refresh.user
-                new_refresh = RefreshToken.for_user(user)
+                # Get access token (which works) and use its user
+                access_token = refresh.access_token
+                new_refresh = RefreshToken.for_user(access_token.user)
 
                 data = {
                     "access": str(new_refresh.access_token),
