@@ -82,7 +82,7 @@ class TrenchAPIClient(APIClient):
         jwt = self._get_token_from_response(response)
         self.credentials(HTTP_AUTHORIZATION=self._HEADER_TEMPLATE.format(jwt))
 
-        # Store refresh token cookie if present
+        # Store both access and refresh token cookies if present
         if hasattr(response, 'cookies'):
             for cookie in response.cookies.values():
                 if cookie['path'] == '/':
@@ -116,7 +116,7 @@ class TrenchAPIClient(APIClient):
             jwt_token = self._get_token_from_response(response)
             self.credentials(HTTP_AUTHORIZATION=self._HEADER_TEMPLATE.format(jwt_token))
 
-            # Update refresh token cookie if rotated
+            # Update both access and refresh token cookies if present
             if hasattr(response, 'cookies'):
                 for cookie in response.cookies.values():
                     if cookie['path'] == '/':

@@ -6,7 +6,7 @@ from rest_framework.status import HTTP_200_OK, HTTP_401_UNAUTHORIZED, HTTP_204_N
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
-from trench.settings import trench_settings, JWT_REFRESH_COOKIE_NAME, JWT_REFRESH_COOKIE_SECURE, JWT_REFRESH_COOKIE_HTTPONLY, JWT_REFRESH_COOKIE_SAMESITE, JWT_REFRESH_COOKIE_PATH, JWT_REFRESH_COOKIE_DOMAIN, JWT_ROTATE_REFRESH_TOKENS
+from trench.settings import trench_settings, JWT_REFRESH_COOKIE_NAME, JWT_REFRESH_COOKIE_SECURE, JWT_REFRESH_COOKIE_HTTPONLY, JWT_REFRESH_COOKIE_SAMESITE, JWT_REFRESH_COOKIE_PATH, JWT_REFRESH_COOKIE_DOMAIN, JWT_ROTATE_REFRESH_TOKENS, JWT_ACCESS_COOKIE_NAME, JWT_ACCESS_COOKIE_SECURE, JWT_ACCESS_COOKIE_HTTPONLY, JWT_ACCESS_COOKIE_SAMESITE, JWT_ACCESS_COOKIE_PATH, JWT_ACCESS_COOKIE_DOMAIN
 from trench.views import MFAFirstStepMixin, MFASecondStepMixin, MFAStepMixin, User
 import logging
 from rest_framework_simplejwt.settings import api_settings
@@ -56,14 +56,19 @@ class MFAJWTView(MFAStepMixin):
 
         response = Response(data)
 
-        # Set refresh token as HTTPOnly cookie
+        # Set both tokens as HTTPOnly cookies
         self._set_refresh_token_cookie(response, str(token))
+        self._set_access_token_cookie(response, str(token.access_token))
 
         return response
 
     def _set_refresh_token_cookie(self, response: Response, refresh_token: str) -> None:
         """Set refresh token as HTTPOnly cookie"""
         self._set_refresh_token_cookie_static(response, refresh_token)
+
+    def _set_access_token_cookie(self, response: Response, access_token: str) -> None:
+        """Set access token as HTTPOnly cookie"""
+        self._set_access_token_cookie_static(response, access_token)
 
     @staticmethod
     def _set_refresh_token_cookie_static(response: Response, refresh_token: str) -> None:
@@ -95,6 +100,40 @@ class MFAJWTView(MFAStepMixin):
         response.set_cookie(
             cookie_name,
             refresh_token,
+            **cookie_kwargs
+        )
+
+    @staticmethod
+    def _set_access_token_cookie_static(response: Response, access_token: str) -> None:
+        """Set access token as HTTPOnly cookie - static method for reuse"""
+        cookie_name = trench_settings[JWT_ACCESS_COOKIE_NAME]
+        cookie_secure = trench_settings[JWT_ACCESS_COOKIE_SECURE]
+        cookie_httponly = trench_settings[JWT_ACCESS_COOKIE_HTTPONLY]
+        cookie_samesite = trench_settings[JWT_ACCESS_COOKIE_SAMESITE]
+        cookie_path = trench_settings[JWT_ACCESS_COOKIE_PATH]
+        cookie_domain = trench_settings[JWT_ACCESS_COOKIE_DOMAIN]
+
+        # Get access token lifetime from SimpleJWT settings
+        from rest_framework_simplejwt.tokens import AccessToken
+        access_token_obj = AccessToken(access_token)
+        max_age = int(access_token_obj.lifetime.total_seconds())
+
+        # Build cookie arguments
+        cookie_kwargs = {
+            'max_age': max_age,
+            'path': cookie_path,
+            'secure': cookie_secure,
+            'httponly': cookie_httponly,
+            'samesite': cookie_samesite,
+        }
+
+        # Only set domain if specified
+        if cookie_domain:
+            cookie_kwargs['domain'] = cookie_domain
+
+        response.set_cookie(
+            cookie_name,
+            access_token,
             **cookie_kwargs
         )
 
@@ -169,15 +208,20 @@ class MFAJWTRefreshView(APIView):
                 }
                 response = Response(data, status=HTTP_200_OK)
 
-                # Set the rotated refresh token in the HTTPOnly cookie
+                # Set both the rotated refresh token and access token in HTTPOnly cookies
                 MFAJWTView._set_refresh_token_cookie_static(response, str(refresh))
+                MFAJWTView._set_access_token_cookie_static(response, str(refresh.access_token))
                 return response
 
             # No rotation: issue new access token only
             data = {
                 "access": str(refresh.access_token),
             }
-            return Response(data, status=HTTP_200_OK)
+            response = Response(data, status=HTTP_200_OK)
+
+            # Set the access token in HTTPOnly cookie
+            MFAJWTView._set_access_token_cookie_static(response, str(refresh.access_token))
+            return response
 
         except TokenError:
             return Response(
@@ -196,22 +240,30 @@ class MFAJWTLogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        cookie_name = trench_settings[JWT_REFRESH_COOKIE_NAME]
-        cookie_path = trench_settings[JWT_REFRESH_COOKIE_PATH]
-        cookie_domain = trench_settings[JWT_REFRESH_COOKIE_DOMAIN]
+        refresh_cookie_name = trench_settings[JWT_REFRESH_COOKIE_NAME]
+        access_cookie_name = trench_settings[JWT_ACCESS_COOKIE_NAME]
+        cookie_path = trench_settings[JWT_REFRESH_COOKIE_PATH]  # Both use same path
+        cookie_domain = trench_settings[JWT_REFRESH_COOKIE_DOMAIN]  # Both use same domain
 
         response = Response(
             {"message": "Successfully logged out"},
             status=HTTP_204_NO_CONTENT
         )
 
-        # Clear refresh token cookie - need to match domain if set
+        # Clear both cookies - need to match domain if set
         delete_kwargs = {'path': cookie_path}
         if cookie_domain:
             delete_kwargs['domain'] = cookie_domain
 
+        # Clear refresh token cookie
         response.delete_cookie(
-            cookie_name,
+            refresh_cookie_name,
+            **delete_kwargs
+        )
+
+        # Clear access token cookie
+        response.delete_cookie(
+            access_cookie_name,
             **delete_kwargs
         )
 
