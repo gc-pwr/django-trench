@@ -271,3 +271,13 @@ class MFAJWTLogoutView(APIView):
         logger.info(f"Logout success; UserID: {request.user.id}")
 
         return response
+
+class MFAJWTVerifyView(APIView):
+    permission_classes = []
+    authentication_classes = [JWTCookieAuthentication]
+
+    def get(self, request):
+        # If we get here, authentication succeeded
+        if request.user and request.user.is_authenticated:
+            return Response({"valid": True, "user_id": request.user.id})
+        return Response({"valid": False}, status=401)
