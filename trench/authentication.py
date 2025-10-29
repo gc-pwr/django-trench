@@ -1,6 +1,7 @@
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework_simplejwt.tokens import UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from rest_framework.exceptions import AuthenticationFailed
 from django.contrib.auth import get_user_model
 from trench.settings import trench_settings, JWT_ACCESS_COOKIE_NAME
 
@@ -25,10 +26,11 @@ class JWTCookieAuthentication(JWTAuthentication):
                 validated_token = self.get_validated_token(raw_token)
                 user = self.get_user(validated_token)
                 return (user, validated_token)
-            except TokenError:
-                # Invalid token in cookie, don't fall back to header
-                # This prevents potential confusion between cookie and header auth
-                pass
+            except TokenError as e:
+                # Invalid or expired token in cookie
+                # Raise AuthenticationFailed to return 401 instead of 403
+                # This triggers refresh flow in frontend interceptors
+                raise AuthenticationFailed('Invalid or expired token')
 
         # Fall back to Authorization header
         return super().authenticate(request)
