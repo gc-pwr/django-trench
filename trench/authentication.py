@@ -3,7 +3,7 @@ from rest_framework_simplejwt.tokens import UntypedToken
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework.exceptions import AuthenticationFailed
 from django.contrib.auth import get_user_model
-from trench.settings import trench_settings, JWT_ACCESS_COOKIE_NAME
+from trench.settings import trench_settings, JWT_ACCESS_COOKIE_NAME, JWT_REFRESH_COOKIE_NAME
 
 
 class JWTCookieAuthentication(JWTAuthentication):
@@ -17,7 +17,7 @@ class JWTCookieAuthentication(JWTAuthentication):
 
     def authenticate(self, request):
         # Try cookie first
-        cookie_name = trench_settings.get(JWT_ACCESS_COOKIE_NAME, 'access_token')
+        cookie_name = trench_settings[JWT_ACCESS_COOKIE_NAME]
         raw_token = request.COOKIES.get(cookie_name)
 
         if raw_token:
@@ -31,6 +31,21 @@ class JWTCookieAuthentication(JWTAuthentication):
                 # Raise AuthenticationFailed to return 401 instead of 403
                 # This triggers refresh flow in frontend interceptors
                 raise AuthenticationFailed('Invalid or expired token')
+
+        # If no access token cookie, check if user has refresh token cookie
+        # This means they're using cookie-based auth and access token expired
+        refresh_cookie_name = trench_settings[JWT_REFRESH_COOKIE_NAME]
+        if request.COOKIES.get(refresh_cookie_name):
+            # Allow refresh and logout endpoints to work without access token
+            # Check common endpoint paths
+            path = request.path
+            if '/refresh' in path or '/token/refresh' in path or '/logout' in path:
+                # These endpoints should work with just refresh token
+                return None
+
+            # User is authenticated with cookies but access token missing/expired
+            # Return 401 to trigger frontend refresh flow
+            raise AuthenticationFailed('Access token missing or expired')
 
         # Fall back to Authorization header
         return super().authenticate(request)
