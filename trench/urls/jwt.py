@@ -14,5 +14,5 @@ urlpatterns = (
     path("login/code/", MFASecondStepJWTView.as_view(), name="generate-token-jwt"),
     path("refresh/", MFAJWTRefreshView.as_view(), name="refresh-token-jwt"),
     path("logout/", MFAJWTLogoutView.as_view(), name="logout-jwt"),
-    path("verify/", MFAJWTVerifyView, name="verify-token-jwt")
+    path("verify/", MFAJWTVerifyView.as_view(), name="verify-token-jwt")
 )

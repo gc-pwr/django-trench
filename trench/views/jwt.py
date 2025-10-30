@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
 from trench.settings import trench_settings, JWT_REFRESH_COOKIE_NAME, JWT_REFRESH_COOKIE_SECURE, JWT_REFRESH_COOKIE_HTTPONLY, JWT_REFRESH_COOKIE_SAMESITE, JWT_REFRESH_COOKIE_PATH, JWT_REFRESH_COOKIE_DOMAIN, JWT_ROTATE_REFRESH_TOKENS, JWT_ACCESS_COOKIE_NAME, JWT_ACCESS_COOKIE_SECURE, JWT_ACCESS_COOKIE_HTTPONLY, JWT_ACCESS_COOKIE_SAMESITE, JWT_ACCESS_COOKIE_PATH, JWT_ACCESS_COOKIE_DOMAIN
+from trench.authentication import JWTCookieAuthentication
 from trench.views import MFAFirstStepMixin, MFASecondStepMixin, MFAStepMixin, User
 import logging
 from rest_framework_simplejwt.settings import api_settings
