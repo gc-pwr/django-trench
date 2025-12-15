@@ -41,7 +41,9 @@ class MFAJWTView(MFAStepMixin):
         try:
             # Try to import the original serializer if available
             from authentication.serializers import UserSerializer
-            user_serialized = UserSerializer(user).data
+            from core.util import get_employee_id_for_user
+            employee_id = get_employee_id_for_user(user)
+            user_serialized = UserSerializer(user, context={"employee_id": employee_id}).data
         except ImportError:
             # Fallback if serializer not available in library context
             user_serialized = {
