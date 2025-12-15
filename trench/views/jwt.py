@@ -1,12 +1,16 @@
+from django.http import JsonResponse
 from django.utils import timezone
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.status import HTTP_200_OK, HTTP_401_UNAUTHORIZED, HTTP_204_NO_CONTENT
+from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-from authentication.serializers import UserSerializer
-from authentication.utils import get_client_ip_agent
-from core.util import get_employee_id_for_user
-from trench.settings import trench_settings
+from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
+from trench.settings import trench_settings, JWT_REFRESH_COOKIE_NAME, JWT_REFRESH_COOKIE_SECURE, JWT_REFRESH_COOKIE_HTTPONLY, JWT_REFRESH_COOKIE_SAMESITE, JWT_REFRESH_COOKIE_PATH, JWT_REFRESH_COOKIE_DOMAIN, JWT_ROTATE_REFRESH_TOKENS, JWT_ACCESS_COOKIE_NAME, JWT_ACCESS_COOKIE_SECURE, JWT_ACCESS_COOKIE_HTTPONLY, JWT_ACCESS_COOKIE_SAMESITE, JWT_ACCESS_COOKIE_PATH, JWT_ACCESS_COOKIE_DOMAIN
+from trench.authentication import JWTCookieAuthentication
 from trench.views import MFAFirstStepMixin, MFASecondStepMixin, MFAStepMixin, User
 import logging
+from rest_framework_simplejwt.settings import api_settings
 
 logger = logging.getLogger("audit_logger")
 
@@ -18,32 +22,145 @@ class MFAJWTView(MFAStepMixin):
             user.last_login = timezone.now()
             user.save()
 
-        ip, agent = get_client_ip_agent(self.request)
+        # Log successful authentication (restore original logging info)
+        try:
+            # Try to get IP and UserAgent if available
+            x_forwarded_for = self.request.META.get('HTTP_X_FORWARDED_FOR')
+            if x_forwarded_for:
+                ip = x_forwarded_for.split(',')[0]
+            else:
+                ip = self.request.META.get('REMOTE_ADDR', 'Unknown')
+            agent = self.request.META.get('HTTP_USER_AGENT', 'Unknown')
+            logger.info(f"Logon success; UserID: {user.id}; IP: {ip}; UserAgent: {agent};")
+        except Exception:
+            # Fallback if getting IP/Agent fails
+            logger.info(f"Logon success; UserID: {user.id}")
 
-        logger.info(f"Logon success; UserID: {user.id}; IP: {ip}; UserAgent: {agent};")
-        employee_id = get_employee_id_for_user(user)
+        # Return access token and user data - refresh token goes in HTTPOnly cookie instead of response body
+        # Keep the original user serialization that the frontend expects
+        try:
+            # Try to import the original serializer if available
+            from authentication.serializers import UserSerializer
+            from core.util import get_employee_id_for_user
+            employee_id = get_employee_id_for_user(user)
+            user_serialized = UserSerializer(user, context={"employee_id": employee_id}).data
+        except ImportError:
+            # Fallback if serializer not available in library context
+            user_serialized = {
+                "id": user.id,
+                "username": getattr(user, User.USERNAME_FIELD),
+                "email": getattr(user, "email", None),
+            }
 
-        user_serialized = UserSerializer(user, context={"employee_id": employee_id}).data
         data = {
-            "refresh": str(token),
             "access": str(token.access_token),
             "user": user_serialized,
         }
-        return Response(data)
+
+        response = Response(data)
+
+        # Set both tokens as HTTPOnly cookies
+        self._set_refresh_token_cookie(response, str(token))
+        self._set_access_token_cookie(response, str(token.access_token))
+
+        return response
+
+    def _set_refresh_token_cookie(self, response: Response, refresh_token: str) -> None:
+        """Set refresh token as HTTPOnly cookie"""
+        self._set_refresh_token_cookie_static(response, refresh_token)
+
+    def _set_access_token_cookie(self, response: Response, access_token: str) -> None:
+        """Set access token as HTTPOnly cookie"""
+        self._set_access_token_cookie_static(response, access_token)
+
+    @staticmethod
+    def _set_refresh_token_cookie_static(response: Response, refresh_token: str) -> None:
+        """Set refresh token as HTTPOnly cookie - static method for reuse"""
+        cookie_name = trench_settings[JWT_REFRESH_COOKIE_NAME]
+        cookie_secure = trench_settings[JWT_REFRESH_COOKIE_SECURE]
+        cookie_httponly = trench_settings[JWT_REFRESH_COOKIE_HTTPONLY]
+        cookie_samesite = trench_settings[JWT_REFRESH_COOKIE_SAMESITE]
+        cookie_path = trench_settings[JWT_REFRESH_COOKIE_PATH]
+        cookie_domain = trench_settings[JWT_REFRESH_COOKIE_DOMAIN]
+
+        # Get refresh token lifetime from SimpleJWT settings
+        refresh_token_obj = RefreshToken(refresh_token)
+        max_age = int(refresh_token_obj.lifetime.total_seconds())
+
+        # Build cookie arguments
+        cookie_kwargs = {
+            'max_age': max_age,
+            'path': cookie_path,
+            'secure': cookie_secure,
+            'httponly': cookie_httponly,
+            'samesite': cookie_samesite,
+        }
+
+        # Only set domain if specified
+        if cookie_domain:
+            cookie_kwargs['domain'] = cookie_domain
+
+        response.set_cookie(
+            cookie_name,
+            refresh_token,
+            **cookie_kwargs
+        )
+
+    @staticmethod
+    def _set_access_token_cookie_static(response: Response, access_token: str) -> None:
+        """Set access token as HTTPOnly cookie - static method for reuse"""
+        cookie_name = trench_settings[JWT_ACCESS_COOKIE_NAME]
+        cookie_secure = trench_settings[JWT_ACCESS_COOKIE_SECURE]
+        cookie_httponly = trench_settings[JWT_ACCESS_COOKIE_HTTPONLY]
+        cookie_samesite = trench_settings[JWT_ACCESS_COOKIE_SAMESITE]
+        cookie_path = trench_settings[JWT_ACCESS_COOKIE_PATH]
+        cookie_domain = trench_settings[JWT_ACCESS_COOKIE_DOMAIN]
+
+        # Get access token lifetime from SimpleJWT settings
+        from rest_framework_simplejwt.tokens import AccessToken
+        access_token_obj = AccessToken(access_token)
+        max_age = int(access_token_obj.lifetime.total_seconds())
+
+        # Build cookie arguments
+        cookie_kwargs = {
+            'max_age': max_age,
+            'path': cookie_path,
+            'secure': cookie_secure,
+            'httponly': cookie_httponly,
+            'samesite': cookie_samesite,
+        }
+
+        # Only set domain if specified
+        if cookie_domain:
+            cookie_kwargs['domain'] = cookie_domain
+
+        response.set_cookie(
+            cookie_name,
+            access_token,
+            **cookie_kwargs
+        )
 
     def finalize_response(self, request, response, *args, **kwargs):
         if response.status_code != 200:
-            ip, agent = get_client_ip_agent(request)
-            email = request.data.get("email", "Unknown")
-            logger.warning(
-                "Login attempt failed; email: %s, IP: %s; UserAgent: %s; Status: %s, error: %s".format(
-                    email,
-                    ip,
-                    agent,
-                    response.status_code,
-                    response.data.get("error", "") if response.data else "",
+            try:
+                # Get IP and UserAgent info like the original
+                x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+                if x_forwarded_for:
+                    ip = x_forwarded_for.split(',')[0]
+                else:
+                    ip = request.META.get('REMOTE_ADDR', 'Unknown')
+                agent = request.META.get('HTTP_USER_AGENT', 'Unknown')
+                email = request.data.get("email", "Unknown")
+
+                logger.warning(
+                    f"Login attempt failed; email: {email}; IP: {ip}; UserAgent: {agent}; Status: {response.status_code}; error: {response.data.get('error', '') if response.data else ''}"
                 )
-            )
+            except Exception:
+                # Fallback logging if getting IP/Agent fails
+                email = request.data.get("email", "Unknown")
+                logger.warning(
+                    f"Login attempt failed; email: {email}; Status: {response.status_code}; error: {response.data.get('error', '') if response.data else ''}"
+                )
         return super().finalize_response(request, response, *args, **kwargs)
 
 
@@ -53,3 +170,117 @@ class MFAFirstStepJWTView(MFAJWTView, MFAFirstStepMixin):
 
 class MFASecondStepJWTView(MFAJWTView, MFASecondStepMixin):
     pass
+
+
+class MFAJWTRefreshView(APIView):
+    """
+    View to refresh JWT access token using HTTPOnly cookie.
+    Takes refresh token from cookie and returns new access token.
+    """
+    permission_classes = []
+
+    def post(self, request):
+        cookie_name = trench_settings[JWT_REFRESH_COOKIE_NAME]
+        refresh_token = request.COOKIES.get(cookie_name)
+
+        if not refresh_token:
+            return Response(
+                {"error": "Refresh token not found in cookie"},
+                status=HTTP_401_UNAUTHORIZED
+            )
+
+        try:
+            refresh = RefreshToken(refresh_token)
+
+            if trench_settings[JWT_ROTATE_REFRESH_TOKENS]:
+                # Optional: blacklist old refresh token if configured
+                if getattr(api_settings, "BLACKLIST_AFTER_ROTATION", False):
+                    try:
+                        refresh.blacklist()
+                    except AttributeError:
+                        # Blacklist app not installed
+                        pass
+
+                # Rotate the refresh token in-place (aligns with SimpleJWT behavior)
+                refresh.set_jti()
+                refresh.set_exp()
+                refresh.set_iat()
+
+                data = {
+                    "access": str(refresh.access_token),
+                }
+                response = Response(data, status=HTTP_200_OK)
+
+                # Set both the rotated refresh token and access token in HTTPOnly cookies
+                MFAJWTView._set_refresh_token_cookie_static(response, str(refresh))
+                MFAJWTView._set_access_token_cookie_static(response, str(refresh.access_token))
+                return response
+
+            # No rotation: issue new access token only
+            data = {
+                "access": str(refresh.access_token),
+            }
+            response = Response(data, status=HTTP_200_OK)
+
+            # Set the access token in HTTPOnly cookie
+            MFAJWTView._set_access_token_cookie_static(response, str(refresh.access_token))
+            return response
+
+        except TokenError:
+            return Response(
+                {
+                    "error": "Invalid or expired refresh token",
+                    "code": "token_not_valid"
+                },
+                status=HTTP_401_UNAUTHORIZED
+            )
+
+
+class MFAJWTLogoutView(APIView):
+    """
+    View to logout user by clearing the refresh token cookie.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        refresh_cookie_name = trench_settings[JWT_REFRESH_COOKIE_NAME]
+        access_cookie_name = trench_settings[JWT_ACCESS_COOKIE_NAME]
+        cookie_path = trench_settings[JWT_REFRESH_COOKIE_PATH]  # Both use same path
+        cookie_domain = trench_settings[JWT_REFRESH_COOKIE_DOMAIN]  # Both use same domain
+
+        response = Response(
+            {"message": "Successfully logged out"},
+            status=HTTP_204_NO_CONTENT
+        )
+
+        # Clear both cookies - need to match domain if set
+        delete_kwargs = {'path': cookie_path}
+        if cookie_domain:
+            delete_kwargs['domain'] = cookie_domain
+
+        # Clear refresh token cookie
+        response.delete_cookie(
+            refresh_cookie_name,
+            **delete_kwargs
+        )
+
+        # Clear access token cookie
+        response.delete_cookie(
+            access_cookie_name,
+            **delete_kwargs
+        )
+
+        # Log the logout
+        logger.info(f"Logout success; UserID: {request.user.id}")
+
+        return response
+
+class MFAJWTVerifyView(APIView):
+    permission_classes = []
+    authentication_classes = [JWTCookieAuthentication]
+
+    def get(self, request):
+        # If we get here, authentication succeeded
+        if request.user and request.user.is_authenticated:
+            return Response({"valid": True, "user_id": request.user.id})
+        return Response({"valid": False}, status=401)
