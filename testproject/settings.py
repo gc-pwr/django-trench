@@ -27,6 +27,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "rest_framework.authtoken",
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "drf_spectacular",
     "testapp",
@@ -127,6 +128,7 @@ SIMPLE_JWT = {
 }
 
 TRENCH_AUTH = {
+    "JWT_ROTATE_REFRESH_TOKENS": True,
     "CONFIRM_DISABLE_WITH_CODE": True,
     "CONFIRM_BACKUP_CODES_REGENERATION_WITH_CODE": True,
     "BACKUP_CODES_CHARACTERS": "0123456789",

@@ -3,6 +3,37 @@ Changelog
 =========
 
 
+0.4.0 (2026-07-22)
+==================
+
+JWT cookie session-stability fixes (behavioral change to the auth contract).
+
+* :code:`JWTCookieAuthentication`: an invalid or expired access-token cookie is now
+  treated as **no credentials** (degrades to anonymous / Authorization-header
+  fallback) instead of raising a hard 401. The previous behavior 401'd every
+  endpoint — including :code:`/auth/refresh/` and :code:`/auth/logout/` — whenever an
+  expired access cookie rode along with the request (the :code:`except TokenError`
+  was dead code: SimpleJWT raises :code:`InvalidToken`, which is not a
+  :code:`TokenError` subclass). Protected endpoints still return 401
+  (:code:`NotAuthenticated` + ``WWW-Authenticate: Bearer``), so SPA refresh flows
+  keyed on the status code keep working. The fragile path-substring bypass
+  (``'/refresh' in path``) was removed.
+* :code:`MFAJWTRefreshView`: now declares empty :code:`authentication_classes` and
+  :code:`throttle_classes` — the endpoint validates the signed refresh token itself
+  (like SimpleJWT's stock :code:`TokenRefreshView`); anonymous rate throttles on a
+  shared office IP were logging whole offices out. Added a user-liveness check:
+  refresh now returns 401 for deactivated/deleted users (in-place rotation
+  previously made sessions slide forever). **Contract: a 401 from this endpoint
+  is the single definitive "session dead" signal** — it is never returned for an
+  expired access cookie or transient conditions.
+* :code:`MFAJWTLogoutView`: now anonymous-capable and idempotent — always returns
+  204 and always clears both JWT cookies, even when the access token is expired
+  or missing (previously logout 401'd in exactly that state and the HttpOnly
+  cookies were never cleared). Best-effort blacklists the presented refresh
+  token so it cannot be replayed. Cookie deletion now matches the original
+  ``samesite`` attribute. The 204 no longer carries a body.
+
+
 0.3.1 (2022-02-23)
 ==================
 

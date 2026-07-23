@@ -1,12 +1,10 @@
-from django.http import JsonResponse
 from django.utils import timezone
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.status import HTTP_200_OK, HTTP_401_UNAUTHORIZED, HTTP_204_NO_CONTENT
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.exceptions import TokenError, InvalidToken
-from trench.settings import trench_settings, JWT_REFRESH_COOKIE_NAME, JWT_REFRESH_COOKIE_SECURE, JWT_REFRESH_COOKIE_HTTPONLY, JWT_REFRESH_COOKIE_SAMESITE, JWT_REFRESH_COOKIE_PATH, JWT_REFRESH_COOKIE_DOMAIN, JWT_ROTATE_REFRESH_TOKENS, JWT_ACCESS_COOKIE_NAME, JWT_ACCESS_COOKIE_SECURE, JWT_ACCESS_COOKIE_HTTPONLY, JWT_ACCESS_COOKIE_SAMESITE, JWT_ACCESS_COOKIE_PATH, JWT_ACCESS_COOKIE_DOMAIN
+from rest_framework_simplejwt.exceptions import TokenError
+from trench.settings import trench_settings, JWT_REFRESH_COOKIE_NAME, JWT_REFRESH_COOKIE_SECURE, JWT_REFRESH_COOKIE_HTTPONLY, JWT_REFRESH_COOKIE_SAMESITE, JWT_REFRESH_COOKIE_PATH, JWT_REFRESH_COOKIE_DOMAIN, JWT_ROTATE_REFRESH_TOKENS, JWT_ACCESS_COOKIE_NAME, JWT_ACCESS_COOKIE_SECURE, JWT_ACCESS_COOKIE_HTTPONLY, JWT_ACCESS_COOKIE_SAMESITE, JWT_ACCESS_COOKIE_PATH, JWT_ACCESS_COOKIE_DOMAIN, USER_ACTIVE_FIELD
 from trench.authentication import JWTCookieAuthentication
 from trench.views import MFAFirstStepMixin, MFASecondStepMixin, MFAStepMixin, User
 import logging
@@ -175,105 +173,159 @@ class MFASecondStepJWTView(MFAJWTView, MFASecondStepMixin):
 class MFAJWTRefreshView(APIView):
     """
     View to refresh JWT access token using HTTPOnly cookie.
-    Takes refresh token from cookie and returns new access token.
+
+    Response contract (the SPA refresh flow depends on it):
+      * 200 {"access": <jwt>} + Set-Cookie for the access token (and the
+        rotated refresh token when JWT_ROTATE_REFRESH_TOKENS) whenever the
+        refresh token cookie is valid - regardless of the access cookie
+        state (present, expired or absent).
+      * 401 {"error": ..., "code": "token_not_valid"} ONLY when the refresh
+        token is missing/expired/invalid/blacklisted or its user is
+        inactive/deleted. A 401 from this endpoint is the single definitive
+        "session dead" signal; it is never returned for an expired access
+        cookie or transient conditions.
+
+    Authentication and throttling are intentionally disabled: the endpoint
+    validates the signed refresh token itself (like SimpleJWT's stock
+    TokenRefreshView), and rate limiting a signed-JWT endpoint adds no
+    security while shared-IP throttle exhaustion logs whole offices out.
     """
-    permission_classes = []
+    authentication_classes: list = []
+    permission_classes: list = []
+    throttle_classes: list = []
 
     def post(self, request):
         cookie_name = trench_settings[JWT_REFRESH_COOKIE_NAME]
         refresh_token = request.COOKIES.get(cookie_name)
 
         if not refresh_token:
-            return Response(
-                {"error": "Refresh token not found in cookie"},
-                status=HTTP_401_UNAUTHORIZED
-            )
+            return self._invalid_session("Refresh token not found in cookie")
 
         try:
             refresh = RefreshToken(refresh_token)
-
-            if trench_settings[JWT_ROTATE_REFRESH_TOKENS]:
-                # Optional: blacklist old refresh token if configured
-                if getattr(api_settings, "BLACKLIST_AFTER_ROTATION", False):
-                    try:
-                        refresh.blacklist()
-                    except AttributeError:
-                        # Blacklist app not installed
-                        pass
-
-                # Rotate the refresh token in-place (aligns with SimpleJWT behavior)
-                refresh.set_jti()
-                refresh.set_exp()
-                refresh.set_iat()
-
-                data = {
-                    "access": str(refresh.access_token),
-                }
-                response = Response(data, status=HTTP_200_OK)
-
-                # Set both the rotated refresh token and access token in HTTPOnly cookies
-                MFAJWTView._set_refresh_token_cookie_static(response, str(refresh))
-                MFAJWTView._set_access_token_cookie_static(response, str(refresh.access_token))
-                return response
-
-            # No rotation: issue new access token only
-            data = {
-                "access": str(refresh.access_token),
-            }
-            response = Response(data, status=HTTP_200_OK)
-
-            # Set the access token in HTTPOnly cookie
-            MFAJWTView._set_access_token_cookie_static(response, str(refresh.access_token))
-            return response
-
         except TokenError:
-            return Response(
-                {
-                    "error": "Invalid or expired refresh token",
-                    "code": "token_not_valid"
-                },
-                status=HTTP_401_UNAUTHORIZED
+            return self._invalid_session("Invalid or expired refresh token")
+
+        # In-place rotation makes the session slide indefinitely, so check
+        # the user is still active before extending it.
+        if not self._user_is_active(refresh):
+            return self._invalid_session("User inactive or not found")
+
+        if trench_settings[JWT_ROTATE_REFRESH_TOKENS]:
+            # Optional: blacklist old refresh token if configured. Left off
+            # by default on purpose: old tokens staying valid until their
+            # natural expiry is what lets concurrent tabs refresh without
+            # invalidating each other.
+            if getattr(api_settings, "BLACKLIST_AFTER_ROTATION", False):
+                try:
+                    refresh.blacklist()
+                except AttributeError:
+                    # Blacklist app not installed
+                    pass
+
+            # Rotate the refresh token in-place (aligns with SimpleJWT behavior)
+            refresh.set_jti()
+            refresh.set_exp()
+            refresh.set_iat()
+
+        data = {
+            "access": str(refresh.access_token),
+        }
+        response = Response(data, status=HTTP_200_OK)
+
+        if trench_settings[JWT_ROTATE_REFRESH_TOKENS]:
+            MFAJWTView._set_refresh_token_cookie_static(response, str(refresh))
+        MFAJWTView._set_access_token_cookie_static(response, str(refresh.access_token))
+        return response
+
+    @staticmethod
+    def _user_is_active(refresh) -> bool:
+        try:
+            user = User._default_manager.get(
+                **{api_settings.USER_ID_FIELD: refresh[api_settings.USER_ID_CLAIM]}
             )
+        except User.DoesNotExist:
+            return False
+        return bool(getattr(user, trench_settings[USER_ACTIVE_FIELD], True))
+
+    @staticmethod
+    def _invalid_session(message: str) -> Response:
+        return Response(
+            {"error": message, "code": "token_not_valid"},
+            status=HTTP_401_UNAUTHORIZED,
+        )
 
 
 class MFAJWTLogoutView(APIView):
     """
-    View to logout user by clearing the refresh token cookie.
+    View to logout user by clearing both JWT cookies.
+
+    Anonymous-capable and idempotent: always returns 204 and always clears
+    the cookies, even when the access token is expired or missing - that is
+    exactly the state a session-expiry logout arrives in. Best-effort
+    blacklists the presented refresh token so it cannot be replayed for the
+    remainder of its lifetime.
     """
-    permission_classes = [IsAuthenticated]
+    authentication_classes: list = []
+    permission_classes: list = []
+    throttle_classes: list = []
 
     def post(self, request):
         refresh_cookie_name = trench_settings[JWT_REFRESH_COOKIE_NAME]
         access_cookie_name = trench_settings[JWT_ACCESS_COOKIE_NAME]
-        cookie_path = trench_settings[JWT_REFRESH_COOKIE_PATH]  # Both use same path
-        cookie_domain = trench_settings[JWT_REFRESH_COOKIE_DOMAIN]  # Both use same domain
 
-        response = Response(
-            {"message": "Successfully logged out"},
-            status=HTTP_204_NO_CONTENT
-        )
+        # The access token may be expired, so derive the user id for the
+        # audit log from the (signed) refresh token when needed.
+        user_id = getattr(request.user, "id", None)
+        raw_refresh = request.COOKIES.get(refresh_cookie_name)
+        if raw_refresh:
+            try:
+                token = RefreshToken(raw_refresh)
+                if user_id is None:
+                    user_id = token.get(api_settings.USER_ID_CLAIM)
+                try:
+                    token.blacklist()
+                except AttributeError:
+                    # Blacklist app not installed
+                    pass
+            except TokenError:
+                # Already expired/invalid: nothing to revoke
+                pass
 
-        # Clear both cookies - need to match domain if set
-        delete_kwargs = {'path': cookie_path}
-        if cookie_domain:
-            delete_kwargs['domain'] = cookie_domain
+        # A 204 must not carry a body
+        response = Response(status=HTTP_204_NO_CONTENT)
 
-        # Clear refresh token cookie
-        response.delete_cookie(
-            refresh_cookie_name,
-            **delete_kwargs
-        )
-
-        # Clear access token cookie
-        response.delete_cookie(
-            access_cookie_name,
-            **delete_kwargs
-        )
+        # Deletion only takes effect when path/domain/samesite match the
+        # attributes the cookies were set with.
+        for name, path_key, domain_key, samesite_key in (
+            (
+                refresh_cookie_name,
+                JWT_REFRESH_COOKIE_PATH,
+                JWT_REFRESH_COOKIE_DOMAIN,
+                JWT_REFRESH_COOKIE_SAMESITE,
+            ),
+            (
+                access_cookie_name,
+                JWT_ACCESS_COOKIE_PATH,
+                JWT_ACCESS_COOKIE_DOMAIN,
+                JWT_ACCESS_COOKIE_SAMESITE,
+            ),
+        ):
+            delete_kwargs = {
+                "path": trench_settings[path_key],
+                "samesite": trench_settings[samesite_key],
+            }
+            if trench_settings[domain_key]:
+                delete_kwargs["domain"] = trench_settings[domain_key]
+            response.delete_cookie(name, **delete_kwargs)
 
         # Log the logout
-        logger.info(f"Logout success; UserID: {request.user.id}")
+        logger.info(
+            f"Logout success; UserID: {user_id if user_id is not None else 'anonymous'}"
+        )
 
         return response
+
 
 class MFAJWTVerifyView(APIView):
     permission_classes = []
