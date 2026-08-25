@@ -20,6 +20,8 @@ class TrenchAPIClient(APIClient):
     _DEFAULT_TOKEN_FIELD = "access"
     PATH_AUTH_JWT_LOGIN = "/auth/jwt/login/"
     PATH_AUTH_JWT_LOGIN_CODE = "/auth/jwt/login/code/"
+    PATH_AUTH_JWT_REFRESH = "/auth/jwt/refresh/"
+    PATH_AUTH_JWT_LOGOUT = "/auth/jwt/logout/"
     PATH_AUTH_TOKEN_LOGIN = "/auth/token/login/"
     PATH_AUTH_TOKEN_LOGIN_CODE = "/auth/token/login/code/"
 
@@ -80,6 +82,12 @@ class TrenchAPIClient(APIClient):
         jwt = self._get_token_from_response(response)
         self.credentials(HTTP_AUTHORIZATION=self._HEADER_TEMPLATE.format(jwt))
 
+        # Store both access and refresh token cookies if present
+        if hasattr(response, 'cookies'):
+            for cookie in response.cookies.values():
+                if cookie['path'] == '/':
+                    self.cookies[cookie.key] = cookie.value
+
     def _extract_ephemeral_token_from_response(self, response: Response) -> str:
         return response.data.get("ephemeral_token")
 
@@ -99,3 +107,28 @@ class TrenchAPIClient(APIClient):
             verify=False,
             algorithms=["HS256"],
         ).get(User.USERNAME_FIELD)
+
+    def refresh_token(self, path: str = PATH_AUTH_JWT_REFRESH) -> Response:
+        """Refresh the access token using the stored cookie"""
+        response = self.post(path=path, data={}, format="json")
+        if response.status_code == 200:
+            # Update authorization header with new access token
+            jwt_token = self._get_token_from_response(response)
+            self.credentials(HTTP_AUTHORIZATION=self._HEADER_TEMPLATE.format(jwt_token))
+
+            # Update both access and refresh token cookies if present
+            if hasattr(response, 'cookies'):
+                for cookie in response.cookies.values():
+                    if cookie['path'] == '/':
+                        self.cookies[cookie.key] = cookie.value
+        return response
+
+    def logout_jwt(self, path: str = PATH_AUTH_JWT_LOGOUT) -> Response:
+        """Logout and clear cookies"""
+        response = self.post(path=path, data={}, format="json")
+        if response.status_code in [200, 204]:
+            # Clear authentication credentials
+            self.credentials()
+            # Clear cookies
+            self.cookies.clear()
+        return response
